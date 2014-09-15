@@ -22,8 +22,12 @@ package org.elasticsearch.repositories.s3;
 import com.amazonaws.services.s3.AmazonS3;
 import com.amazonaws.services.s3.model.DeleteObjectsRequest;
 import com.amazonaws.services.s3.model.ObjectListing;
+import com.amazonaws.services.s3.model.S3Object;
 import com.amazonaws.services.s3.model.S3ObjectSummary;
 
+import com.carrotsearch.ant.tasks.junit4.dependencies.com.google.gson.stream.JsonReader;
+import com.carrotsearch.ant.tasks.junit4.dependencies.com.google.gson.stream.MalformedJsonException;
+import org.apache.commons.codec.binary.Hex;
 import org.elasticsearch.action.admin.cluster.repositories.put.PutRepositoryResponse;
 import org.elasticsearch.action.admin.cluster.snapshots.create.CreateSnapshotResponse;
 import org.elasticsearch.action.admin.cluster.snapshots.restore.RestoreSnapshotResponse;
@@ -44,6 +48,9 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 
+import javax.crypto.KeyGenerator;
+import java.io.InputStreamReader;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 
 import static org.hamcrest.Matchers.equalTo;
@@ -112,6 +119,7 @@ public class S3SnapshotRestoreTest extends AbstractAwsTest {
         assertThat(createSnapshotResponse.getSnapshotInfo().successfulShards(), equalTo(createSnapshotResponse.getSnapshotInfo().totalShards()));
 
         assertThat(client.admin().cluster().prepareGetSnapshots("test-repo").setSnapshots("test-snap").get().getSnapshots().get(0).state(), equalTo(SnapshotState.SUCCESS));
+        assertMetadataFileIsNotEncrypted("test-snap");
 
         logger.info("--> delete some data");
         for (int i = 0; i < 50; i++) {
@@ -151,6 +159,44 @@ public class S3SnapshotRestoreTest extends AbstractAwsTest {
         ClusterState clusterState = client.admin().cluster().prepareState().get().getState();
         assertThat(clusterState.getMetaData().hasIndex("test-idx-1"), equalTo(true));
         assertThat(clusterState.getMetaData().hasIndex("test-idx-2"), equalTo(false));
+    }
+
+    @Test
+    public void testClientSideEncryption() throws NoSuchAlgorithmException {
+        // Generate a random encryption key for the test
+        KeyGenerator keyGen = KeyGenerator.getInstance("AES");
+        keyGen.init(128);
+        String encryptionKey = Hex.encodeHexString(keyGen.generateKey().getEncoded());
+
+        Client client = client();
+        PutRepositoryResponse putRepositoryResponse = client.admin().cluster().preparePutRepository("test-repo")
+                .setType("s3").setSettings(ImmutableSettings.settingsBuilder()
+                                .put("base_path", basePath)
+                                .put("client_side_encryption_key", encryptionKey)
+                                .put("chunk_size", randomIntBetween(1000, 10000))
+                ).get();
+
+        // Create the index and index some data
+        createIndex("test-idx-1");
+        for (int i = 0; i < 100; i++) {
+            index("test-idx-1", "doc", Integer.toString(i), "foo", "bar" + i);
+        }
+        refresh();
+
+        // Take the snapshot
+        CreateSnapshotResponse createSnapshotResponse = client.admin().cluster().prepareCreateSnapshot("test-repo", "test-snap").setWaitForCompletion(true).setIndices("test-idx-1").get();
+        assertThat(createSnapshotResponse.getSnapshotInfo().successfulShards(), greaterThan(0));
+        assertThat(createSnapshotResponse.getSnapshotInfo().successfulShards(), equalTo(createSnapshotResponse.getSnapshotInfo().totalShards()));
+
+        assertMetadataFileIsEncrypted("test-snap");
+
+        // Restore
+        cluster().wipeIndices("test-idx-1");
+        RestoreSnapshotResponse restoreSnapshotResponse = client.admin().cluster().prepareRestoreSnapshot("test-repo", "test-snap").setWaitForCompletion(true).setIndices("test-idx-1").execute().actionGet();
+        ensureGreen();
+        assertThat(client.prepareCount("test-idx-1").get().getCount(), equalTo(100L));
+        ClusterState clusterState = client.admin().cluster().prepareState().get().getState();
+        assertThat(clusterState.getMetaData().hasIndex("test-idx-1"), equalTo(true));
     }
 
     /**
@@ -263,6 +309,49 @@ public class S3SnapshotRestoreTest extends AbstractAwsTest {
         assertThat(client.prepareCount("test-idx-1").get().getCount(), equalTo(100L));
     }
 
+    private void assertMetadataFileIsEncrypted(String snapshotName) {
+
+        Settings settings = cluster().getInstance(Settings.class);
+        AmazonS3 s3Client = cluster().getInstance(AwsS3Service.class).client(
+                settings.get("repositories.s3.region"),
+                settings.get("cloud.aws.access_key"),
+                settings.get("cloud.aws.secret_key"));
+        String bucket = settings.get("repositories.s3.bucket");
+        String objectKey = basePath + "/metadata-" + snapshotName;
+        S3Object object = s3Client.getObject(bucket, objectKey);
+
+        try {
+            JsonReader jsonReader = new JsonReader(new InputStreamReader(object.getObjectContent()));
+            jsonReader.beginObject();
+            assertEquals(jsonReader.nextName(), "meta-data");
+
+            fail("The file hasn't been encrypted properly, its content is still readable!");
+        } catch(Exception e) {
+            // The json is not valid, the file is encrypted
+
+            // MalformedJsonException can't be catched directly so the following
+            //   assertion is necessary to avoid silent failures.
+            assertTrue(e instanceof MalformedJsonException);
+        }
+    }
+
+    private void assertMetadataFileIsNotEncrypted(String snapshotName) {
+
+        Settings settings = cluster().getInstance(Settings.class);
+        AmazonS3 s3Client = cluster().getInstance(AwsS3Service.class).client(
+                settings.get("repositories.s3.region"),
+                settings.get("cloud.aws.access_key"),
+                settings.get("cloud.aws.secret_key"));
+        String bucket = settings.get("repositories.s3.bucket");
+        String objectKey = basePath + "/metadata-test-snap";
+        S3Object object = s3Client.getObject(bucket, objectKey);
+
+        JsonReader jsonReader = new JsonReader(new InputStreamReader(object.getObjectContent()));
+        jsonReader.beginObject();
+        assertEquals(jsonReader.nextName(), "meta-data");
+
+        // The beginning of the file looks like json. If it was encrypted, it wouldn't.
+    }
 
     /**
      * Deletes repositories, supports wildcard notation.
