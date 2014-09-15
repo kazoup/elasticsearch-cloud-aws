@@ -35,6 +35,7 @@ import org.elasticsearch.repositories.RepositorySettings;
 import org.elasticsearch.repositories.blobstore.BlobStoreRepository;
 
 import java.io.IOException;
+import java.security.NoSuchAlgorithmException;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
@@ -82,6 +83,22 @@ public class S3Repository extends BlobStoreRepository {
             throw new RepositoryException(name.name(), "No bucket defined for s3 gateway");
         }
 
+
+        String clientSideEncryptionKey = repositorySettings.settings().get("client_side_encryption_key", componentSettings.get("client_side_encryption_key"));
+        if (clientSideEncryptionKey != null && !clientSideEncryptionKey.matches("^[0-9a-fA-F]+$")) {
+            if (!clientSideEncryptionKey.matches("^[0-9a-fA-F]+$")) {
+                throw new RepositoryException(name.name(), "client_side_encryption_key should be an hexadecimal string.");
+            }
+
+            try {
+                if (clientSideEncryptionKey != null && clientSideEncryptionKey.length() > javax.crypto.Cipher.getMaxAllowedKeyLength("AES")) {
+                    throw new RepositoryException(name.name(), "client_side_encryption_key too long. Use Java Cryptography Extension to use longer keys.");
+                }
+            } catch (NoSuchAlgorithmException e) {
+                throw new RepositoryException(name.name(), e.getMessage());
+            }
+        }
+
         String region = repositorySettings.settings().get("region", componentSettings.get("region"));
         if (region == null) {
             // Bucket setting is not set - use global region setting
@@ -124,7 +141,7 @@ public class S3Repository extends BlobStoreRepository {
         ExecutorService concurrentStreamPool = EsExecutors.newScaling(1, concurrentStreams, 5, TimeUnit.SECONDS, EsExecutors.daemonThreadFactory(settings, "[s3_stream]"));
 
         logger.debug("using bucket [{}], region [{}], chunk_size [{}], concurrent_streams [{}]", bucket, region, chunkSize, concurrentStreams);
-        blobStore = new S3BlobStore(settings, s3Service.client(region, repositorySettings.settings().get("access_key"), repositorySettings.settings().get("secret_key")), bucket, region, concurrentStreamPool);
+        blobStore = new S3BlobStore(settings, s3Service.client(region, repositorySettings.settings().get("access_key"), repositorySettings.settings().get("secret_key")), bucket, region, clientSideEncryptionKey, concurrentStreamPool);
         this.chunkSize = repositorySettings.settings().getAsBytesSize("chunk_size", componentSettings.getAsBytesSize("chunk_size", new ByteSizeValue(100, ByteSizeUnit.MB)));
         this.compress = repositorySettings.settings().getAsBoolean("compress", componentSettings.getAsBoolean("compress", false));
         String basePath = repositorySettings.settings().get("base_path", null);

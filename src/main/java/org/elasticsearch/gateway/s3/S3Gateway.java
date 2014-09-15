@@ -36,6 +36,7 @@ import org.elasticsearch.index.gateway.s3.S3IndexGatewayModule;
 import org.elasticsearch.threadpool.ThreadPool;
 
 import java.io.IOException;
+import java.security.NoSuchAlgorithmException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
 
@@ -54,6 +55,21 @@ public class S3Gateway extends BlobStoreGateway {
         String bucket = componentSettings.get("bucket");
         if (bucket == null) {
             throw new ElasticsearchIllegalArgumentException("No bucket defined for s3 gateway");
+        }
+
+        String clientSideEncryptionKey = componentSettings.get("client_side_encryption_key");
+        if (clientSideEncryptionKey != null && !clientSideEncryptionKey.matches("^[0-9a-fA-F]+$")) {
+            if (!clientSideEncryptionKey.matches("^[0-9a-fA-F]+$")) {
+                throw new ElasticsearchIllegalArgumentException("client_side_encryption_key should be an hexadecimal string.");
+            }
+
+            try {
+                if (clientSideEncryptionKey != null && clientSideEncryptionKey.length() > javax.crypto.Cipher.getMaxAllowedKeyLength("AES")) {
+                    throw new ElasticsearchIllegalArgumentException("client_side_encryption_key too long. Use Java Cryptography Extension to use longer keys.");
+                }
+            } catch (NoSuchAlgorithmException e) {
+                throw new ElasticsearchIllegalArgumentException(e.getMessage());
+            }
         }
 
         String region = componentSettings.get("region");
@@ -98,7 +114,7 @@ public class S3Gateway extends BlobStoreGateway {
 
         logger.debug("using bucket [{}], region [{}], chunk_size [{}], concurrent_streams [{}]", bucket, region, chunkSize, concurrentStreams);
 
-        initialize(new S3BlobStore(settings, s3Service.client(), bucket, region, concurrentStreamPool), clusterName, chunkSize);
+        initialize(new S3BlobStore(settings, s3Service.client(), bucket, region, clientSideEncryptionKey, concurrentStreamPool), clusterName, chunkSize);
     }
 
     @Override
