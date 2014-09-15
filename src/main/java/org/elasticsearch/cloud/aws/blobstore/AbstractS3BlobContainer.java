@@ -22,15 +22,22 @@ package org.elasticsearch.cloud.aws.blobstore;
 import com.amazonaws.services.s3.model.ObjectListing;
 import com.amazonaws.services.s3.model.S3Object;
 import com.amazonaws.services.s3.model.S3ObjectSummary;
+import org.apache.lucene.util.IOUtils;
 import org.elasticsearch.common.Nullable;
 import org.elasticsearch.common.blobstore.BlobMetaData;
 import org.elasticsearch.common.blobstore.BlobPath;
 import org.elasticsearch.common.blobstore.support.AbstractBlobContainer;
 import org.elasticsearch.common.blobstore.support.PlainBlobMetaData;
 import org.elasticsearch.common.collect.ImmutableMap;
+import org.elasticsearch.common.primitives.Longs;
 
-import java.io.IOException;
-import java.io.InputStream;
+import java.io.*;
+
+import java.security.Key;
+import javax.xml.bind.DatatypeConverter;
+import javax.crypto.spec.SecretKeySpec;
+import javax.crypto.Cipher;
+import javax.crypto.CipherInputStream;
 
 /**
  *
@@ -76,6 +83,31 @@ public class AbstractS3BlobContainer extends AbstractBlobContainer {
                 try {
                     S3Object object = blobStore.client().getObject(blobStore.bucket(), buildKey(blobName));
                     is = object.getObjectContent();
+
+                    String clientSideEncryptionKey = blobStore.getClientSideEncryptionKey();
+                    if(clientSideEncryptionKey != null) {
+
+                        // Decryption
+                        String encryptionKeyString = clientSideEncryptionKey;
+                        byte[] encryptionKeyValue = DatatypeConverter.parseHexBinary(encryptionKeyString);
+                        Key encryptionKey = new SecretKeySpec(encryptionKeyValue, "AES");
+                        Cipher cipher = Cipher.getInstance("AES");
+                        cipher.init(Cipher.DECRYPT_MODE, encryptionKey);
+                        is = new CipherInputStream(object.getObjectContent(), cipher);
+
+                        // Get the original size of the content
+                        byte[] sizeInBytesAsArray = new byte[Long.SIZE / 8];
+                        is.read(sizeInBytesAsArray);
+                        long sizeInBytes = Longs.fromByteArray(sizeInBytesAsArray);
+
+                        // Skip the padding bytes
+                        long totalSizeWithoutPaddingInBytes = Long.SIZE / 8 + sizeInBytes;
+                        long paddingSizeInBytes = 0;
+                        if(totalSizeWithoutPaddingInBytes % cipher.getBlockSize() > 0) {
+                            paddingSizeInBytes = cipher.getBlockSize() - totalSizeWithoutPaddingInBytes % cipher.getBlockSize();
+                        }
+                        is.skip(paddingSizeInBytes);
+                    }
                 } catch (Exception e) {
                     listener.onFailure(e);
                     return;
