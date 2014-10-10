@@ -19,12 +19,14 @@
 
 package org.elasticsearch.gateway.s3;
 
+import com.amazonaws.services.s3.model.EncryptionMaterials;
 import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.ElasticsearchIllegalArgumentException;
 import org.elasticsearch.cloud.aws.AwsS3Service;
 import org.elasticsearch.cloud.aws.blobstore.S3BlobStore;
 import org.elasticsearch.cluster.ClusterName;
 import org.elasticsearch.cluster.ClusterService;
+import org.elasticsearch.common.Base64;
 import org.elasticsearch.common.inject.Inject;
 import org.elasticsearch.common.inject.Module;
 import org.elasticsearch.common.settings.Settings;
@@ -33,9 +35,15 @@ import org.elasticsearch.common.unit.ByteSizeValue;
 import org.elasticsearch.common.util.concurrent.EsExecutors;
 import org.elasticsearch.gateway.blobstore.BlobStoreGateway;
 import org.elasticsearch.index.gateway.s3.S3IndexGatewayModule;
+import org.elasticsearch.repositories.RepositoryException;
 import org.elasticsearch.threadpool.ThreadPool;
 
+import javax.crypto.spec.SecretKeySpec;
 import java.io.IOException;
+import java.security.*;
+import java.security.spec.InvalidKeySpecException;
+import java.security.spec.PKCS8EncodedKeySpec;
+import java.security.spec.X509EncodedKeySpec;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
 
@@ -56,6 +64,51 @@ public class S3Gateway extends BlobStoreGateway {
             throw new ElasticsearchIllegalArgumentException("No bucket defined for s3 gateway");
         }
 
+        String clientSideEncryptionSymmetricKeyBase64 = componentSettings.get("client_side_encryption_key.symmetric");
+        String clientSideEncryptionPublicKeyBase64 = componentSettings.get("client_side_encryption_key.public");
+        String clientSideEncryptionPrivateKeyBase64 = componentSettings.get("client_side_encryption_key.private");
+        EncryptionMaterials clientSideEncryptionMaterials = null;
+        if (clientSideEncryptionSymmetricKeyBase64 != null && (clientSideEncryptionPublicKeyBase64 != null || clientSideEncryptionPrivateKeyBase64 != null)) {
+            throw new ElasticsearchIllegalArgumentException("Client-side encryption: You can't specify an symmetric key AND a public/private key pair");
+        }
+        if (clientSideEncryptionSymmetricKeyBase64 != null) {
+            try {
+                if (javax.crypto.Cipher.getMaxAllowedKeyLength("AES") < 256) {
+                    throw new ElasticsearchIllegalArgumentException("Client-side encryption: Please install the Java Cryptography Extension");
+                }
+
+                byte[] symmetricKeyBytes = Base64.decode(clientSideEncryptionSymmetricKeyBase64);
+                SecretKeySpec symmetricKey = new SecretKeySpec(symmetricKeyBytes, "AES");
+                clientSideEncryptionMaterials = new EncryptionMaterials(symmetricKey);
+            } catch (IllegalArgumentException e) {
+                throw new ElasticsearchIllegalArgumentException("Client-side encryption: Error decoding your symmetric key: " + e.getMessage());
+            } catch (NoSuchAlgorithmException e) {
+                throw new ElasticsearchIllegalArgumentException(e.getMessage());
+            }
+        }
+        if (clientSideEncryptionPublicKeyBase64 != null || clientSideEncryptionPrivateKeyBase64 != null) {
+            if(clientSideEncryptionPublicKeyBase64 == null || clientSideEncryptionPrivateKeyBase64 == null) {
+                throw new ElasticsearchIllegalArgumentException("Client-side encryption: Please specify a public AND a private key, not just one of them.");
+            }
+            try {
+                if (javax.crypto.Cipher.getMaxAllowedKeyLength("AES") < 256) {
+                    throw new ElasticsearchIllegalArgumentException("Client-side encryption: Please install the Java Cryptography Extension");
+                }
+
+                final byte[] publicKeyBytes = Base64.decode(clientSideEncryptionPublicKeyBase64);
+                PublicKey publicKey = KeyFactory.getInstance("RSA").generatePublic(new X509EncodedKeySpec(publicKeyBytes));
+                final byte[] privateKeyBytes = Base64.decode(clientSideEncryptionPrivateKeyBase64);
+                PrivateKey privateKey = KeyFactory.getInstance("RSA").generatePrivate(new PKCS8EncodedKeySpec(privateKeyBytes));
+                KeyPair keyPair = new KeyPair(publicKey, privateKey);
+                clientSideEncryptionMaterials = new EncryptionMaterials(keyPair);
+            } catch (IllegalArgumentException e) {
+                throw new ElasticsearchIllegalArgumentException("Client-side encryption: Error decoding your public/private keys: " + e.getMessage());
+            } catch (NoSuchAlgorithmException e) {
+                throw new ElasticsearchIllegalArgumentException(e.getMessage());
+            } catch (InvalidKeySpecException e) {
+                throw new ElasticsearchIllegalArgumentException( e.getMessage());
+            }
+        }
         String region = componentSettings.get("region");
         if (region == null) {
             if (settings.get("cloud.aws.region") != null) {
@@ -98,7 +151,7 @@ public class S3Gateway extends BlobStoreGateway {
 
         logger.debug("using bucket [{}], region [{}], chunk_size [{}], concurrent_streams [{}]", bucket, region, chunkSize, concurrentStreams);
 
-        initialize(new S3BlobStore(settings, s3Service.client(), bucket, region, concurrentStreamPool), clusterName, chunkSize);
+        initialize(new S3BlobStore(settings, s3Service.client(clientSideEncryptionMaterials), bucket, region, concurrentStreamPool), clusterName, chunkSize);
     }
 
     @Override
