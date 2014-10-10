@@ -25,6 +25,11 @@ import com.amazonaws.auth.*;
 import com.amazonaws.internal.StaticCredentialsProvider;
 import com.amazonaws.services.s3.AmazonS3;
 import com.amazonaws.services.s3.AmazonS3Client;
+import com.amazonaws.services.s3.AmazonS3EncryptionClient;
+import com.amazonaws.services.s3.model.CryptoConfiguration;
+import com.amazonaws.services.s3.model.EncryptionMaterials;
+import com.amazonaws.services.s3.model.EncryptionMaterialsProvider;
+import com.amazonaws.services.s3.model.StaticEncryptionMaterialsProvider;
 import org.elasticsearch.ElasticsearchException;
 import org.elasticsearch.ElasticsearchIllegalArgumentException;
 import org.elasticsearch.common.collect.Tuple;
@@ -42,9 +47,9 @@ import java.util.Map;
 public class InternalAwsS3Service extends AbstractLifecycleComponent<AwsS3Service> implements AwsS3Service {
 
     /**
-     * (acceskey, endpoint) -> client
+     * (acceskey, (endpoint, clientSideEncryptionKey)) -> client
      */
-    private Map<Tuple<String, String>, AmazonS3Client> clients = new HashMap<Tuple<String,String>, AmazonS3Client>();
+    private Map<Tuple<String, Tuple<String, EncryptionMaterials>>, AmazonS3Client> clients = new HashMap<Tuple<String,Tuple<String, EncryptionMaterials>>, AmazonS3Client>();
 
     @Inject
     public InternalAwsS3Service(Settings settings, SettingsFilter settingsFilter) {
@@ -59,11 +64,16 @@ public class InternalAwsS3Service extends AbstractLifecycleComponent<AwsS3Servic
         String account = componentSettings.get("access_key", settings.get("cloud.account"));
         String key = componentSettings.get("secret_key", settings.get("cloud.key"));
 
-        return getClient(endpoint, account, key);
+        return getClient(endpoint, account, key, null);
     }
 
     @Override
     public synchronized AmazonS3 client(String region, String account, String key) {
+        return client(region, account, key, null);
+    }
+
+    @Override
+    public synchronized AmazonS3 client(String region, String account, String key, EncryptionMaterials clientSideEncryptionMaterials) {
         String endpoint;
         if (region == null) {
             endpoint = getDefaultEndpoint();
@@ -76,12 +86,12 @@ public class InternalAwsS3Service extends AbstractLifecycleComponent<AwsS3Servic
             key = componentSettings.get("secret_key", settings.get("cloud.key"));
         }
 
-        return getClient(endpoint, account, key);
+        return getClient(endpoint, account, key, clientSideEncryptionMaterials);
     }
 
 
-    private synchronized AmazonS3 getClient(String endpoint, String account, String key) {
-        Tuple<String, String> clientDescriptor = new Tuple<String, String>(endpoint, account);
+    private synchronized AmazonS3 getClient(String endpoint, String account, String key, EncryptionMaterials clientSideEncryptionMaterials) {
+        Tuple<String, Tuple<String, EncryptionMaterials>> clientDescriptor = new Tuple<String, Tuple<String, EncryptionMaterials>>(endpoint, new Tuple(account, clientSideEncryptionMaterials));
         AmazonS3Client client = clients.get(clientDescriptor);
         if (client != null) {
             return client;
@@ -123,7 +133,19 @@ public class InternalAwsS3Service extends AbstractLifecycleComponent<AwsS3Servic
                     new StaticCredentialsProvider(new BasicAWSCredentials(account, key))
             );
         }
-        client = new AmazonS3Client(credentials, clientConfiguration);
+
+        if(clientSideEncryptionMaterials != null) {
+            EncryptionMaterialsProvider encryptionMaterialsProvider = new StaticEncryptionMaterialsProvider(clientSideEncryptionMaterials);
+            CryptoConfiguration cryptoConfiguration = new CryptoConfiguration();
+            client = new AmazonS3EncryptionClient(
+                    credentials,
+                    encryptionMaterialsProvider,
+                    clientConfiguration,
+                    cryptoConfiguration
+            );
+        } else {
+            client = new AmazonS3Client(credentials, clientConfiguration);
+        }
 
         if (endpoint != null) {
             client.setEndpoint(endpoint);
