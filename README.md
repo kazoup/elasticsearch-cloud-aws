@@ -114,6 +114,10 @@ The following settings are supported:
 * `compress`: When set to `true` metadata files are stored in compressed format. This setting doesn't affect index files that are already compressed by default. Defaults to `false`.
 * `server_side_encryption`: When set to `true` files are encrypted on server side using AES256 algorithm. Defaults to `false`.
 * `max_retries`: Number of retries in case of S3 errors. Defaults to `3`.
+* `client_side_encryption`: The keys to use to encrypt your snapshots. You can specify either a symmetric key or a public/private key pair. No encryption by default.
+  * `symmetric`: Base64-encoded AES symmetric-key (128, 192 or 256 bits)
+  * `public`: Base64-encoded RSA public key
+  * `public`: Base64-encoded RSA private key
 
 The S3 repositories are using the same credentials as the rest of the AWS services provided by this plugin (`discovery`).
 See [Generic Configuration](#generic-configuration) for details.
