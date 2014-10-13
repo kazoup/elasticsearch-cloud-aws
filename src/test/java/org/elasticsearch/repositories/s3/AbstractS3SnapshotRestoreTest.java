@@ -518,7 +518,7 @@ abstract public class AbstractS3SnapshotRestoreTest extends AbstractAwsTest {
                 settings.get("cloud.aws.access_key"),
                 settings.get("cloud.aws.secret_key"));
         String bucket = settings.get("repositories.s3.bucket");
-        String objectKey = basePath + "/metadata-test-snap";
+        String objectKey = basePath + "/metadata-" + snapshotName;
         S3Object object = s3Client.getObject(bucket, objectKey);
 
         JsonReader jsonReader = new JsonReader(new InputStreamReader(object.getObjectContent()));
