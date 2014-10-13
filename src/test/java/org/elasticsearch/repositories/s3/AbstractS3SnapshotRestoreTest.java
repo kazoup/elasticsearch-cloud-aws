@@ -500,15 +500,13 @@ abstract public class AbstractS3SnapshotRestoreTest extends AbstractAwsTest {
         try {
             JsonReader jsonReader = new JsonReader(new InputStreamReader(object.getObjectContent()));
             jsonReader.beginObject();
-            assertEquals(jsonReader.nextName(), "meta-data");
-
-            fail("The file hasn't been encrypted properly, its content is still readable!");
+            assertThat("The file hasn't been encrypted properly, its content is still readable!", jsonReader.nextName(), not(equalTo("meta-data")));
         } catch(Exception e) {
             // The json is not valid, the file is encrypted
 
             // MalformedJsonException can't be catched directly so the following
             //   assertion is necessary to avoid silent failures.
-            assertTrue(e instanceof MalformedJsonException);
+            assertThat(e instanceof MalformedJsonException, equalTo(true));
         }
     }
 
@@ -525,7 +523,7 @@ abstract public class AbstractS3SnapshotRestoreTest extends AbstractAwsTest {
 
         JsonReader jsonReader = new JsonReader(new InputStreamReader(object.getObjectContent()));
         jsonReader.beginObject();
-        assertEquals(jsonReader.nextName(), "meta-data");
+        assertThat("The file wasn't decrypted properly", jsonReader.nextName(), equalTo("meta-data"));
 
         // The beginning of the file looks like json. If it was encrypted, it wouldn't.
     }
