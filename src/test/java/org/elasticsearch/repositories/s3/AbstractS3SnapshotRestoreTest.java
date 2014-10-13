@@ -41,6 +41,7 @@ import org.elasticsearch.common.settings.ImmutableSettings;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.util.concurrent.UncategorizedExecutionException;
 import org.elasticsearch.plugins.PluginsService;
+import org.elasticsearch.repositories.RepositoryException;
 import org.elasticsearch.repositories.RepositoryMissingException;
 import org.elasticsearch.snapshots.SnapshotMissingException;
 import org.elasticsearch.snapshots.SnapshotState;
@@ -266,6 +267,20 @@ abstract public class AbstractS3SnapshotRestoreTest extends AbstractAwsTest {
         String publicEncryptionKeyBase64 = Base64.encodeAsString(keyPair.getPublic().getEncoded());
         String privateEncryptionKeyBase64 = Base64.encodeAsString(keyPair.getPrivate().getEncoded());
 
+        Client client = client();
+        try {
+            PutRepositoryResponse putRepositoryResponse = client.admin().cluster().preparePutRepository("test-repo")
+                    .setType("s3").setSettings(ImmutableSettings.settingsBuilder()
+                                    .put("base_path", basePath)
+                                    .put("client_side_encryption_key.symmetric", symmetricEncryptionKeyBase64)
+                                    .put("client_side_encryption_key.public", publicEncryptionKeyBase64)
+                                    .put("client_side_encryption_key.private", privateEncryptionKeyBase64)
+                                    .put("chunk_size", randomIntBetween(1000, 10000))
+                    ).get();
+            fail("Symmetric and public/private key pairs are exclusive options. An exception should be thrown.");
+        } catch(RepositoryException e) {
+        }
+
         List<ImmutableSettings.Builder> allSettings = Arrays.asList(
             ImmutableSettings.settingsBuilder()
                     .put("base_path", basePath)
@@ -278,7 +293,6 @@ abstract public class AbstractS3SnapshotRestoreTest extends AbstractAwsTest {
                     .put("chunk_size", randomIntBetween(1000, 10000))
         );
         for(ImmutableSettings.Builder settings: allSettings) {
-            Client client = client();
             PutRepositoryResponse putRepositoryResponse = client.admin().cluster().preparePutRepository("test-repo")
                     .setType("s3").setSettings(settings).get();
 

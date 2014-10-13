@@ -100,38 +100,29 @@ public class S3Repository extends BlobStoreRepository {
         if (clientSideEncryptionSymmetricKeyBase64 != null && (clientSideEncryptionPublicKeyBase64 != null || clientSideEncryptionPrivateKeyBase64 != null)) {
             throw new RepositoryException(name.name(), "Client-side encryption: You can't specify an symmetric key AND a public/private key pair");
         }
-        if (clientSideEncryptionSymmetricKeyBase64 != null) {
+        if (clientSideEncryptionSymmetricKeyBase64 != null || clientSideEncryptionPublicKeyBase64 != null || clientSideEncryptionPrivateKeyBase64 != null) {
             try {
+                // Check crypto
                 if (javax.crypto.Cipher.getMaxAllowedKeyLength("AES") < 256) {
                     throw new RepositoryException(name.name(), "Client-side encryption: Please install the Java Cryptography Extension");
                 }
 
-                byte[] symmetricKeyBytes = Base64.decode(clientSideEncryptionSymmetricKeyBase64);
-                SecretKeySpec symmetricKey = new SecretKeySpec(symmetricKeyBytes, "AES");
-                clientSideEncryptionMaterials = new EncryptionMaterials(symmetricKey);
-            } catch (IllegalArgumentException e) {
-                throw new RepositoryException(name.name(), "Client-side encryption: Error decoding your symmetric key: " + e.getMessage());
-            } catch (NoSuchAlgorithmException e) {
-                throw new RepositoryException(name.name(), e.getMessage());
-            }
-        }
-        if (clientSideEncryptionPublicKeyBase64 != null || clientSideEncryptionPrivateKeyBase64 != null) {
-            if(clientSideEncryptionPublicKeyBase64 == null || clientSideEncryptionPrivateKeyBase64 == null) {
-                throw new RepositoryException(name.name(), "Client-side encryption: Please specify a public AND a private key, not just one of them.");
-            }
-            try {
-                if (javax.crypto.Cipher.getMaxAllowedKeyLength("AES") < 256) {
-                    throw new RepositoryException(name.name(), "Client-side encryption: Please install the Java Cryptography Extension");
+                // Check Symmetric and Public/private exclusion
+                if (clientSideEncryptionSymmetricKeyBase64 != null && (clientSideEncryptionPublicKeyBase64 != null || clientSideEncryptionPrivateKeyBase64 != null)) {
+                    throw new RepositoryException(name.name(), "Client-side encryption: You can't specify an symmetric key AND a public/private key pair");
                 }
 
-                final byte[] publicKeyBytes = Base64.decode(clientSideEncryptionPublicKeyBase64);
-                PublicKey publicKey = KeyFactory.getInstance("RSA").generatePublic(new X509EncodedKeySpec(publicKeyBytes));
-                final byte[] privateKeyBytes = Base64.decode(clientSideEncryptionPrivateKeyBase64);
-                PrivateKey privateKey = KeyFactory.getInstance("RSA").generatePrivate(new PKCS8EncodedKeySpec(privateKeyBytes));
-                KeyPair keyPair = new KeyPair(publicKey, privateKey);
-                clientSideEncryptionMaterials = new EncryptionMaterials(keyPair);
+                // Transform the keys in a EncryptionMaterials
+                if (clientSideEncryptionSymmetricKeyBase64 != null) {
+                    clientSideEncryptionMaterials = new EncryptionMaterials(new SecretKeySpec(Base64.decode(clientSideEncryptionSymmetricKeyBase64), "AES"));
+                } else {
+                    clientSideEncryptionMaterials = new EncryptionMaterials(new KeyPair(
+                            KeyFactory.getInstance("RSA").generatePublic(new X509EncodedKeySpec(Base64.decode(clientSideEncryptionPublicKeyBase64))),
+                            KeyFactory.getInstance("RSA").generatePrivate(new PKCS8EncodedKeySpec(Base64.decode(clientSideEncryptionPrivateKeyBase64)))));
+                }
+
             } catch (IllegalArgumentException e) {
-                throw new RepositoryException(name.name(), "Client-side encryption: Error decoding your public/private keys: " + e.getMessage());
+                throw new RepositoryException(name.name(), "Client-side encryption: Error decoding your keys: " + e.getMessage());
             } catch (NoSuchAlgorithmException e) {
                 throw new RepositoryException(name.name(), e.getMessage());
             } catch (InvalidKeySpecException e) {
