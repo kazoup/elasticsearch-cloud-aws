@@ -506,7 +506,7 @@ abstract public class AbstractS3SnapshotRestoreTest extends AbstractAwsTest {
 
             // MalformedJsonException can't be catched directly so the following
             //   assertion is necessary to avoid silent failures.
-            assertThat(e instanceof MalformedJsonException, equalTo(true));
+            assertThat(e, instanceOf(MalformedJsonException.class));
         }
     }
 
