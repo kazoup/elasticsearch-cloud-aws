@@ -20,6 +20,7 @@
 package org.elasticsearch.cloud.aws.blobstore;
 
 import com.amazonaws.services.s3.AmazonS3;
+import com.amazonaws.services.s3.AmazonS3EncryptionClient;
 import com.amazonaws.services.s3.model.DeleteObjectsRequest;
 import com.amazonaws.services.s3.model.DeleteObjectsRequest.KeyVersion;
 import com.amazonaws.services.s3.model.ObjectListing;
@@ -70,6 +71,9 @@ public class S3BlobStore extends AbstractComponent implements BlobStore {
         this.bufferSize = (bufferSize != null) ? bufferSize : MIN_BUFFER_SIZE;
         if (this.bufferSize.getBytes() < MIN_BUFFER_SIZE.getBytes()) {
             throw new BlobStoreException("\"Detected a buffer_size for the S3 storage lower than [" + MIN_BUFFER_SIZE + "]");
+        }
+        if (client instanceof AmazonS3EncryptionClient && this.bufferSize.getBytes() % 16 > 0) {
+            throw new BlobStoreException("Detected client-side encryption and a buffer_size for the S3 storage not a multiple of the cipher block size (16)");
         }
 
         this.numberOfRetries = settings.getAsInt("max_retries", 3);
